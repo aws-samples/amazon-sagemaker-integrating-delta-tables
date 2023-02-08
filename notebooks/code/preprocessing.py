@@ -11,6 +11,7 @@ from decimal import Decimal
 # Import pyspark and build Spark session
 from pyspark import SparkContext, SparkConf
 from pyspark.sql import SparkSession, SQLContext
+from feature_store_manager import FeatureStoreManager
 
 # Defining some functions for efficiently ingesting into SageMaker Feature Store...
 def remove_exponent(d):
@@ -38,7 +39,7 @@ def ingest_to_feature_store(fg, region, rows) -> None:
     columns = rows.columns
     for index, row in rows.iterrows():
         record = transform_row(columns, row)
-        #print(f'Putting record:{record}')
+        #print(f'Putting record:{record}')        
         response = featurestore_runtime_client.put_record(FeatureGroupName=fg, Record=record)
         #print(f'Done with row:{index}')
         assert response['ResponseMetadata']['HTTPStatusCode'] == 200
@@ -86,22 +87,35 @@ def main():
 
     # Code to Drop column for column: ratingID to resolve warning: ID column 
     processed_features=processed_features.drop(columns=['ratingID'])
+    
+    # Complete with EventTime feature
+    processed_features['EventTime']=str(pd.to_datetime('now').strftime('%Y-%m-%dT%H:%M:%SZ'))
+
+    print(processed_features.head())
 
     # Capture resulting data frame in Spark
-    sqlContext = SQLContext(sc)
-    df=sqlContext.createDataFrame(processed_features)
+    #sqlContext = SQLContext(sc)
+    #data=sqlContext.createDataFrame(processed_features)
     # ----------------
+    columns = ['rowID', 'timestamp', 'userID', 'placeID', 'rating_overall', 'rating_food', 'rating_service', 'EventTime']
+    df = spark.createDataFrame(processed_features).toDF(*columns)
     
     # Write processed data after transformations...
     processed_features_output_path = args.output_path + 'processed_features.csv'
-    df.write.csv(processed_features_output_path)
     print("Saving processed features to {}".format(processed_features_output_path))
-    
+    df.write.csv(processed_features_output_path)
+
     # Ingesting the resulting data into our Feature Group...
     print(f"Ingesting processed features into Feature Group {args.feature_group}...")
-    ingest_to_feature_store(args.feature_group, args.region, processed_features)
-    print("All done.")
+    feature_store_manager = FeatureStoreManager()
+    feature_store_manager.ingest_data(
+        input_data_frame=df,
+        feature_group_arn=f'{args.feature_group}',
+        target_stores=['OfflineStore']
+    )
 
+    #ingest_to_feature_store(args.feature_group, args.region, processed_features)
+    print("All done.")
 
 if __name__ == "__main__":
     main()
